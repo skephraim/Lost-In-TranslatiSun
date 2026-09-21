@@ -5,14 +5,17 @@
   "description": "RosettaMAIC: a Latin American Spanish immersion platform built on a LangGraph multi-agent classroom.",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "demo": "tsx src/demo/run_lesson.ts"
   },
   "dependencies": {
     "@langchain/anthropic": "^1.5.10",
-    "@langchain/langgraph": "^1.4.16",
-    "@langchain/core": "^1.1.48"
+    "@langchain/core": "^1.1.48",
+    "@langchain/langgraph": "^1.4.16"
   },
   "devDependencies": {
+    "@types/node": "^26.6.2",
+    "tsx": "^4.23.15",
     "typescript": "^5.5.0"
   }
 }

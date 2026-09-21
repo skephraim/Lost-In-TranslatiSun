@@ -1,4 +1,4 @@
-import { StateGraph, Annotation, END, START, interrupt } from "@langchain/langgraph";
+import { StateGraph, Annotation, END, START, interrupt, MemorySaver } from "@langchain/langgraph";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { AIMessage, BaseMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { maestraElena, peerMateo, peerSofia, phoneticsCoach, taBilingual } from "../agents";
@@ -45,6 +45,7 @@ export const LessonState = Annotation.Root({
   taRequested: Annotation<boolean>({ default: () => false, reducer: (_prev, next) => next }),
   taQuestion: Annotation<string>({ default: () => "", reducer: (_prev, next) => next }),
   streak: Annotation<number>({ default: () => 0, reducer: (_prev, next) => next }),
+  drillsCompleted: Annotation<number>({ default: () => 0, reducer: (_prev, next) => next }),
   // Every LLM turn (from any agent) gets appended here. The reducer
   // concatenates instead of overwriting, so this is the graph's transcript —
   // the same idea as an append-only `messages` table keyed by conversation id.
@@ -55,6 +56,9 @@ export const LessonState = Annotation.Root({
 });
 
 export type LessonStateType = typeof LessonState.State;
+
+/** Signature every LLM backend must satisfy. Swapping this out is how tests run without an API key. */
+export type LLMCaller = (agent: AgentPersona, userMessage: string, history?: BaseMessage[]) => Promise<string>;
 
 /**
  * One ChatAnthropic client per agent, created lazily on first use and reused
@@ -77,22 +81,23 @@ function getModelFor(agent: AgentPersona): ChatAnthropic {
 }
 
 /**
- * The actual LLM call. Sends the persona's system prompt plus the running
+ * The real LLM call. Sends the persona's system prompt plus the running
  * transcript plus the newest human turn, and returns the model's reply as
  * plain text. `history` lets an agent "remember" earlier turns in the same
  * lesson instead of responding to each message in isolation.
  */
-async function callAgentLLM(agent: AgentPersona, userMessage: string, history: BaseMessage[] = []): Promise<string> {
+export const callAnthropic: LLMCaller = async (agent, userMessage, history = []) => {
   const model = getModelFor(agent);
   const response = await model.invoke([new SystemMessage(agent.systemPrompt), ...history, new HumanMessage(userMessage)]);
   return typeof response.content === "string" ? response.content : JSON.stringify(response.content);
-}
+};
 
-// --- Node 1: PlanUnit ------------------------------------------------------
-// Deconstructs the CEFR topic into a scene (visual drill) for this tick.
-async function planUnit(state: LessonStateType): Promise<Partial<LessonStateType>> {
-  const scene: Scene = {
-    id: `${state.topic || "intro"}-${Date.now()}`,
+/**
+ * Drill bank PlanUnit cycles through. A fuller implementation would generate
+ * these from the CEFR topic via the LLM rather than reading a fixed list.
+ */
+const SCENE_BANK: Omit<Scene, "id">[] = [
+  {
     mode: "contrastive_deduction",
     targetPhrase: "El niño bebe agua.",
     tiles: [
@@ -101,45 +106,77 @@ async function planUnit(state: LessonStateType): Promise<Partial<LessonStateType
       { id: "t3", imageUrl: "/scenes/man-eating-bread.png", audioText: "El hombre come pan.", isCorrect: false },
       { id: "t4", imageUrl: "/scenes/girl-drinking-milk.png", audioText: "La niña bebe leche.", isCorrect: false },
     ],
+  },
+  {
+    mode: "contrastive_deduction",
+    targetPhrase: "Los hombres corren.",
+    tiles: [
+      { id: "t1", imageUrl: "/scenes/men-running.png", audioText: "Los hombres corren.", isCorrect: true },
+      { id: "t2", imageUrl: "/scenes/man-running.png", audioText: "El hombre corre.", isCorrect: false },
+      { id: "t3", imageUrl: "/scenes/women-running.png", audioText: "Las mujeres corren.", isCorrect: false },
+      { id: "t4", imageUrl: "/scenes/man-walking.png", audioText: "El hombre camina.", isCorrect: false },
+    ],
+  },
+  {
+    mode: "listen_select",
+    targetPhrase: "La niña come una manzana.",
+    tiles: [
+      { id: "t1", imageUrl: "/scenes/girl-eating-apple.png", audioText: "La niña come una manzana.", isCorrect: true },
+      { id: "t2", imageUrl: "/scenes/boy-eating-apple.png", audioText: "El niño come una manzana.", isCorrect: false },
+      { id: "t3", imageUrl: "/scenes/girl-holding-apple.png", audioText: "La niña tiene una manzana.", isCorrect: false },
+      { id: "t4", imageUrl: "/scenes/girl-eating-orange.png", audioText: "La niña come una naranja.", isCorrect: false },
+    ],
+  },
+];
+
+// --- Node 1: PlanUnit ------------------------------------------------------
+// Deconstructs the CEFR topic into the scene (visual drill) for this tick.
+async function planUnit(state: LessonStateType): Promise<Partial<LessonStateType>> {
+  const template = SCENE_BANK[state.drillsCompleted % SCENE_BANK.length];
+  return {
+    currentScene: { ...template, id: `${state.topic || "intro"}-${state.drillsCompleted}` },
   };
-  return { currentScene: scene };
 }
 
 // --- Node 2: TeacherDrill ---------------------------------------------------
 // Elena introduces the visual stimulus and speaks the target phrase.
-async function teacherDrill(state: LessonStateType): Promise<Partial<LessonStateType>> {
-  if (!state.currentScene) throw new Error("teacherDrill ran before planUnit produced a scene.");
-  const prompt = `Presenta esta escena a la clase, en español, siguiendo tus reglas: ${JSON.stringify(state.currentScene)}`;
-  const reply = await callAgentLLM(maestraElena, prompt, state.messages);
-  return { messages: [new HumanMessage(prompt), new AIMessage(reply)] };
+function makeTeacherDrill(callLLM: LLMCaller) {
+  return async function teacherDrill(state: LessonStateType): Promise<Partial<LessonStateType>> {
+    if (!state.currentScene) throw new Error("teacherDrill ran before planUnit produced a scene.");
+    const prompt = `Presenta esta escena a la clase, en español, siguiendo tus reglas: ${JSON.stringify(state.currentScene)}`;
+    const reply = await callLLM(maestraElena, prompt, state.messages);
+    return { messages: [new HumanMessage(prompt), new AIMessage(reply)] };
+  };
 }
 
 // --- Node 3: PeerSimulation --------------------------------------------------
 // Mateo or Sofía responds first, occasionally modeling a mistake.
-async function peerSimulation(state: LessonStateType): Promise<Partial<LessonStateType>> {
-  const useMateo = Math.random() < 0.5;
-  const agent = useMateo ? peerMateo : peerSofia;
-  // Whether/which error Mateo makes is decided here in code, not by the
-  // model, so the 30% injection rate from his persona is an exact
-  // probability rather than something the LLM might drift away from.
-  const shouldError = useMateo && Math.random() < (peerMateo.errorInjectionRate ?? 0);
-  const errorPattern = shouldError && peerMateo.errorBank ? peerMateo.errorBank[Math.floor(Math.random() * peerMateo.errorBank.length)] : undefined;
+function makePeerSimulation(callLLM: LLMCaller) {
+  return async function peerSimulation(state: LessonStateType): Promise<Partial<LessonStateType>> {
+    const useMateo = Math.random() < 0.5;
+    const agent = useMateo ? peerMateo : peerSofia;
+    // Whether/which error Mateo makes is decided here in code, not by the
+    // model, so the 30% injection rate from his persona is an exact
+    // probability rather than something the LLM might drift away from.
+    const shouldError = useMateo && Math.random() < (peerMateo.errorInjectionRate ?? 0);
+    const errorPattern = shouldError && peerMateo.errorBank ? peerMateo.errorBank[Math.floor(Math.random() * peerMateo.errorBank.length)] : undefined;
 
-  let text: string;
-  if (errorPattern) {
-    // Use the scripted example verbatim — it's a specific, tested error, not
-    // something worth leaving to chance.
-    text = errorPattern.example;
-  } else {
-    const prompt = `Reacciona brevemente a esta escena, en tu propio estilo: ${JSON.stringify(state.currentScene)}`;
-    text = await callAgentLLM(agent, prompt, state.messages);
-  }
+    let text: string;
+    if (errorPattern) {
+      // Use the scripted example verbatim — it's a specific, tested error, not
+      // something worth leaving to chance.
+      text = errorPattern.example;
+    } else {
+      const prompt = `Reacciona brevemente a esta escena, en tu propio estilo: ${JSON.stringify(state.currentScene)}`;
+      text = await callLLM(agent, prompt, state.messages);
+    }
 
-  return {
-    peerTurnAgentId: agent.id,
-    peerTurnText: text,
-    peerTurnHadError: Boolean(errorPattern),
-    messages: [new AIMessage(text)],
+    return {
+      peerTurnAgentId: agent.id,
+      peerTurnText: text,
+      peerTurnHadError: Boolean(errorPattern),
+      messages: [new AIMessage(text)],
+    };
   };
 }
 
@@ -147,46 +184,71 @@ async function peerSimulation(state: LessonStateType): Promise<Partial<LessonSta
 // Suspends the graph until the frontend delivers a voice/selection response.
 // LangGraph's `interrupt()` pauses execution and returns whatever value the
 // caller resumes the graph with (see the frontend's ASR/tile-click handler).
+// Requires the graph to be compiled with a checkpointer — there's nowhere to
+// save the paused state otherwise.
 async function userPrompt(_state: LessonStateType): Promise<Partial<LessonStateType>> {
-  const response = interrupt({ waitingFor: "user_voice_or_tile_selection" }) as string;
-  return { userResponse: response };
+  const resumed = interrupt({ waitingFor: "user_voice_or_tile_selection" }) as
+    | string
+    | { response?: string; taQuestion?: string };
+
+  if (typeof resumed === "string") return { userResponse: resumed };
+  // An object with `taQuestion` means the learner hit the "Ask TA" hotkey
+  // instead of answering, which routes to the TA branch below.
+  if (resumed.taQuestion) return { taRequested: true, taQuestion: resumed.taQuestion };
+  return { userResponse: resumed.response ?? "" };
 }
 
 // --- Node 5: EvaluateResponse -------------------------------------------------
-async function evaluateResponse(state: LessonStateType): Promise<Partial<LessonStateType>> {
-  const target = state.currentScene?.targetPhrase ?? "";
-  const correct = state.userResponse.trim().toLowerCase() === target.trim().toLowerCase();
+function makeEvaluateResponse(callLLM: LLMCaller) {
+  return async function evaluateResponse(state: LessonStateType): Promise<Partial<LessonStateType>> {
+    const target = state.currentScene?.targetPhrase ?? "";
+    const correct = normalize(state.userResponse) === normalize(target);
 
-  const feedbackAgent = correct ? maestraElena : peerSofia;
-  const feedbackPrompt = correct
-    ? `El estudiante respondió correctamente: "${state.userResponse}". Celébralo.`
-    : `El estudiante respondió "${state.userResponse}" pero el objetivo era "${target}". Da una corrección cálida con recasting.`;
-  const feedbackReply = await callAgentLLM(feedbackAgent, feedbackPrompt, state.messages);
+    const feedbackAgent = correct ? maestraElena : peerSofia;
+    const feedbackPrompt = correct
+      ? `El estudiante respondió correctamente: "${state.userResponse}". Celébralo.`
+      : `El estudiante respondió "${state.userResponse}" pero el objetivo era "${target}". Da una corrección cálida con recasting.`;
+    const feedbackReply = await callLLM(feedbackAgent, feedbackPrompt, state.messages);
 
-  // The phonetics coach doesn't need conversation history — it only ever
-  // looks at the single utterance it's asked to score.
-  const phoneticNotesReply = await callAgentLLM(phoneticsCoach, `Evalúa la pronunciación de: "${state.userResponse}"`);
+    // The phonetics coach doesn't need conversation history — it only ever
+    // looks at the single utterance it's asked to score.
+    const phoneticNotesReply = await callLLM(phoneticsCoach, `Evalúa la pronunciación de: "${state.userResponse}"`);
 
-  return {
-    evaluation: { correct, transcript: state.userResponse, phoneticNotes: [phoneticNotesReply] },
-    streak: correct ? state.streak + 1 : 0,
-    messages: [new HumanMessage(state.userResponse), new AIMessage(feedbackReply)],
+    return {
+      evaluation: { correct, transcript: state.userResponse, phoneticNotes: [phoneticNotesReply] },
+      streak: correct ? state.streak + 1 : 0,
+      drillsCompleted: state.drillsCompleted + 1,
+      messages: [new HumanMessage(state.userResponse), new AIMessage(feedbackReply)],
+    };
   };
 }
 
+/** Strips accents, punctuation and case so "el nino bebe agua" matches "El niño bebe agua." */
+function normalize(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
 // --- Branch: TAIntervention ---------------------------------------------------
-// Only entered when the frontend sets `taRequested` before resuming the graph
-// (the "Ask TA" hotkey). Answers in English, then hands back to Spanish.
-async function taIntervention(state: LessonStateType): Promise<Partial<LessonStateType>> {
-  // Deliberately NOT passed the Spanish-classroom `messages` history — the
-  // TA only needs the learner's question, not the in-character transcript,
-  // and mixing the two risks the TA picking up Spanish-only habits from it.
-  const question = state.taQuestion || "The learner pressed Help with no specific question.";
-  const reply = await callAgentLLM(taBilingual, question);
-  return {
-    taRequested: false,
-    taQuestion: "",
-    messages: [new HumanMessage(`[TA aside] ${question}`), new AIMessage(`[TA aside] ${reply}`)],
+// Only entered when the learner hits the "Ask TA" hotkey. Answers in English,
+// then routes straight back to userPrompt so the drill resumes where it paused.
+function makeTAIntervention(callLLM: LLMCaller) {
+  return async function taIntervention(state: LessonStateType): Promise<Partial<LessonStateType>> {
+    // Deliberately NOT passed the Spanish-classroom `messages` history — the
+    // TA only needs the learner's question, not the in-character transcript,
+    // and mixing the two risks the TA picking up Spanish-only habits from it.
+    const question = state.taQuestion || "The learner pressed Help with no specific question.";
+    const reply = await callLLM(taBilingual, question);
+    return {
+      taRequested: false,
+      taQuestion: "",
+      messages: [new HumanMessage(`[TA aside] ${question}`), new AIMessage(`[TA aside] ${reply}`)],
+    };
   };
 }
 
@@ -194,20 +256,28 @@ function routeAfterUserPrompt(state: LessonStateType): "taIntervention" | "evalu
   return state.taRequested ? "taIntervention" : "evaluateResponse";
 }
 
-function routeAfterEvaluate(state: LessonStateType): "planUnit" | typeof END {
-  // Keep looping into new drills; a real implementation would check the
-  // CEFR unit's drill count / mastery threshold here before ending.
-  return state.evaluation?.correct ? "planUnit" : "planUnit";
+export interface LessonGraphOptions {
+  /** Swap in a fake for tests / offline runs. Defaults to the real Anthropic call. */
+  callLLM?: LLMCaller;
+  /** How many drills before the lesson ends. */
+  maxDrills?: number;
 }
 
-export function buildLessonGraph() {
+export function buildLessonGraph(options: LessonGraphOptions = {}) {
+  const callLLM = options.callLLM ?? callAnthropic;
+  const maxDrills = options.maxDrills ?? 5;
+
+  function routeAfterEvaluate(state: LessonStateType): "planUnit" | typeof END {
+    return state.drillsCompleted >= maxDrills ? END : "planUnit";
+  }
+
   const graph = new StateGraph(LessonState)
     .addNode("planUnit", planUnit)
-    .addNode("teacherDrill", teacherDrill)
-    .addNode("peerSimulation", peerSimulation)
+    .addNode("teacherDrill", makeTeacherDrill(callLLM))
+    .addNode("peerSimulation", makePeerSimulation(callLLM))
     .addNode("userPrompt", userPrompt)
-    .addNode("evaluateResponse", evaluateResponse)
-    .addNode("taIntervention", taIntervention)
+    .addNode("evaluateResponse", makeEvaluateResponse(callLLM))
+    .addNode("taIntervention", makeTAIntervention(callLLM))
     .addEdge(START, "planUnit")
     .addEdge("planUnit", "teacherDrill")
     .addEdge("teacherDrill", "peerSimulation")
@@ -222,5 +292,8 @@ export function buildLessonGraph() {
       [END]: END,
     });
 
-  return graph.compile();
+  // interrupt() in userPrompt can only pause if the graph has somewhere to
+  // persist state. MemorySaver keeps it in process memory; swap for a
+  // Postgres/Redis checkpointer when this runs behind a real server.
+  return graph.compile({ checkpointer: new MemorySaver() });
 }

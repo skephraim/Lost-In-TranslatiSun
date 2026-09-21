@@ -56,11 +56,29 @@ sit in the middle of an otherwise-automated agent loop.
 - Full, real system prompts for all five personas (Phase 1 deliverable).
 - A compiling LangGraph skeleton with correct node/edge/interrupt wiring.
 - Shared TypeScript types (`AgentPersona`, `Scene`, `SceneTile`, lesson state).
-- A real `callAgentLLM()` backed by `@langchain/anthropic`'s `ChatAnthropic`.
+- A real `callAnthropic()` backed by `@langchain/anthropic`'s `ChatAnthropic`.
   Every node that talks to an agent sends that persona's `systemPrompt` plus
   the running `messages` transcript and appends the reply back onto it, so
   agents have memory of the lesson so far. Copy `.env.example` to `.env.local`
   and set `ANTHROPIC_API_KEY` to actually run it.
+- A **runnable demo** (`npm run demo`) that drives a whole lesson with a fake
+  LLM — no API key, no microphone needed. It proves the graph wiring works:
+  drills advance, the "Ask TA" interrupt pauses and resumes cleanly, wrong
+  answers route to Sofía instead of Elena, and the lesson terminates at
+  `maxDrills` instead of looping forever.
+
+## Two things worth knowing about the graph
+
+**It needs a checkpointer.** `userPrompt` calls `interrupt()`, and LangGraph
+can only pause mid-execution if it has somewhere to persist the half-finished
+state. `buildLessonGraph()` compiles with an in-process `MemorySaver`; swap
+that for a Postgres or Redis checkpointer before running this behind a real
+server, or every page refresh loses the lesson.
+
+**The LLM backend is swappable.** `buildLessonGraph({ callLLM })` takes any
+function matching the `LLMCaller` signature and defaults to `callAnthropic`.
+That's what lets the demo (and any future tests) run offline — the graph
+doesn't know or care what's answering.
 
 ## What's not here yet (later phases)
 
@@ -72,9 +90,14 @@ sit in the middle of an otherwise-automated agent loop.
 - **No Next.js app, API routes, or SSE streaming** (Phase 5) — this repo is
   currently just the agent/graph "brain," no server or UI around it.
 
-## Running the typecheck
+## Running it
 
 ```bash
 npm install
-npm run typecheck
+npm run typecheck   # no API key needed
+npm run demo        # full lesson with a fake LLM, no API key needed
 ```
+
+`npm run demo` prints each agent turn as it happens, so you can watch the
+state machine move through the nodes and see exactly where it pauses for the
+learner.

@@ -56,11 +56,11 @@ sit in the middle of an otherwise-automated agent loop.
 - Full, real system prompts for all five personas (Phase 1 deliverable).
 - A compiling LangGraph skeleton with correct node/edge/interrupt wiring.
 - Shared TypeScript types (`AgentPersona`, `Scene`, `SceneTile`, lesson state).
-- A real `callAnthropic()` backed by `@langchain/anthropic`'s `ChatAnthropic`.
-  Every node that talks to an agent sends that persona's `systemPrompt` plus
-  the running `messages` transcript and appends the reply back onto it, so
-  agents have memory of the lesson so far. Copy `.env.example` to `.env.local`
-  and set `ANTHROPIC_API_KEY` to actually run it.
+- Real LLM backends in `src/llm/backends.ts` — **Qwen by default**, Claude
+  optional. Every node that talks to an agent sends that persona's
+  `systemPrompt` plus the running `messages` transcript and appends the reply
+  back onto it, so agents have memory of the lesson so far. Copy
+  `.env.example` to `.env.local` to point it at a real model.
 - A **runnable demo** (`npm run demo`) that drives a whole lesson with a fake
   LLM — no API key, no microphone needed. It proves the graph wiring works:
   drills advance, the "Ask TA" interrupt pauses and resumes cleanly, wrong
@@ -76,9 +76,26 @@ that for a Postgres or Redis checkpointer before running this behind a real
 server, or every page refresh loses the lesson.
 
 **The LLM backend is swappable.** `buildLessonGraph({ callLLM })` takes any
-function matching the `LLMCaller` signature and defaults to `callAnthropic`.
-That's what lets the demo (and any future tests) run offline — the graph
-doesn't know or care what's answering.
+function matching the `LLMCaller` signature; with nothing passed it reads
+`LLM_PROVIDER` and picks one. That's what lets the demo (and any future
+tests) run offline — the graph doesn't know or care what's answering.
+
+## Choosing a model
+
+`LLM_PROVIDER=qwen` (the default) talks to Qwen over an **OpenAI-compatible**
+endpoint, which is the same wire format DashScope, OpenRouter, Together,
+vLLM and Ollama all expose. Switching between them is a `QWEN_BASE_URL`
+change, not a code change:
+
+| Route | `QWEN_BASE_URL` | Key |
+|---|---|---|
+| Alibaba Model Studio (Singapore) | *(default)* `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` |
+| Alibaba Model Studio (Beijing) | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` |
+| Ollama, on your own machine | `http://localhost:11434/v1` | none needed |
+| OpenRouter / Together / vLLM | that host's `/v1` | `QWEN_API_KEY` |
+
+`LLM_PROVIDER=anthropic` switches the whole classroom to Claude instead.
+Both paths are live; nothing else in the codebase changes.
 
 ## What's not here yet (later phases)
 

@@ -1,8 +1,9 @@
 import { StateGraph, Annotation, END, START, interrupt, MemorySaver } from "@langchain/langgraph";
-import { ChatAnthropic } from "@langchain/anthropic";
-import { AIMessage, BaseMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages";
 import { maestraElena, peerMateo, peerSofia, phoneticsCoach, taBilingual } from "../agents";
-import type { AgentPersona } from "../types/agent";
+import { resolveLLMBackend, type LLMCaller } from "../llm/backends";
+
+export type { LLMCaller };
 
 /**
  * Visual tile the frontend's <VisualImmersionGrid /> renders. One drill = one
@@ -56,50 +57,6 @@ export const LessonState = Annotation.Root({
 });
 
 export type LessonStateType = typeof LessonState.State;
-
-/** Signature every LLM backend must satisfy. Swapping this out is how tests run without an API key. */
-export type LLMCaller = (agent: AgentPersona, userMessage: string, history?: BaseMessage[]) => Promise<string>;
-
-/**
- * Which Claude model the agents run on. Override with ROSETTA_MODEL to trade
- * cost against quality without touching code — claude-sonnet-5 is roughly
- * 2.5x cheaper per token, claude-haiku-4-5 cheaper still.
- */
-const MODEL_ID = process.env.ROSETTA_MODEL ?? "claude-opus-5";
-
-/**
- * One ChatAnthropic client per agent, created lazily on first use and reused
- * after that (an LLM client is just an HTTP client under the hood — no
- * reason to reconnect on every turn). Reads ANTHROPIC_API_KEY from the
- * environment; see .env.example.
- */
-const modelCache = new Map<string, ChatAnthropic>();
-
-function getModelFor(agent: AgentPersona): ChatAnthropic {
-  const cached = modelCache.get(agent.id);
-  if (cached) return cached;
-
-  const model = new ChatAnthropic({
-    model: MODEL_ID,
-    // The phonetics coach reports measurements, so it wants consistency;
-    // the classroom personas want a bit of variety turn to turn.
-    temperature: agent.role === "phonetics_coach" ? 0.2 : 0.7,
-  });
-  modelCache.set(agent.id, model);
-  return model;
-}
-
-/**
- * The real LLM call. Sends the persona's system prompt plus the running
- * transcript plus the newest human turn, and returns the model's reply as
- * plain text. `history` lets an agent "remember" earlier turns in the same
- * lesson instead of responding to each message in isolation.
- */
-export const callAnthropic: LLMCaller = async (agent, userMessage, history = []) => {
-  const model = getModelFor(agent);
-  const response = await model.invoke([new SystemMessage(agent.systemPrompt), ...history, new HumanMessage(userMessage)]);
-  return typeof response.content === "string" ? response.content : JSON.stringify(response.content);
-};
 
 /**
  * Drill bank PlanUnit cycles through. A fuller implementation would generate
@@ -266,14 +223,14 @@ function routeAfterUserPrompt(state: LessonStateType): "taIntervention" | "evalu
 }
 
 export interface LessonGraphOptions {
-  /** Swap in a fake for tests / offline runs. Defaults to the real Anthropic call. */
+  /** Swap in a fake for tests / offline runs. Defaults to whatever LLM_PROVIDER selects. */
   callLLM?: LLMCaller;
   /** How many drills before the lesson ends. */
   maxDrills?: number;
 }
 
 export function buildLessonGraph(options: LessonGraphOptions = {}) {
-  const callLLM = options.callLLM ?? callAnthropic;
+  const callLLM = options.callLLM ?? resolveLLMBackend();
   const maxDrills = options.maxDrills ?? 5;
 
   function routeAfterEvaluate(state: LessonStateType): "planUnit" | typeof END {

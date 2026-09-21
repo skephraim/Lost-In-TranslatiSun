@@ -61,6 +61,13 @@ export type LessonStateType = typeof LessonState.State;
 export type LLMCaller = (agent: AgentPersona, userMessage: string, history?: BaseMessage[]) => Promise<string>;
 
 /**
+ * Which Claude model the agents run on. Override with ROSETTA_MODEL to trade
+ * cost against quality without touching code — claude-sonnet-5 is roughly
+ * 2.5x cheaper per token, claude-haiku-4-5 cheaper still.
+ */
+const MODEL_ID = process.env.ROSETTA_MODEL ?? "claude-opus-5";
+
+/**
  * One ChatAnthropic client per agent, created lazily on first use and reused
  * after that (an LLM client is just an HTTP client under the hood — no
  * reason to reconnect on every turn). Reads ANTHROPIC_API_KEY from the
@@ -73,7 +80,9 @@ function getModelFor(agent: AgentPersona): ChatAnthropic {
   if (cached) return cached;
 
   const model = new ChatAnthropic({
-    model: "claude-sonnet-5",
+    model: MODEL_ID,
+    // The phonetics coach reports measurements, so it wants consistency;
+    // the classroom personas want a bit of variety turn to turn.
     temperature: agent.role === "phonetics_coach" ? 0.2 : 0.7,
   });
   modelCache.set(agent.id, model);

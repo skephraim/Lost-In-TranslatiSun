@@ -56,13 +56,14 @@ sit in the middle of an otherwise-automated agent loop.
 - Full, real system prompts for all five personas (Phase 1 deliverable).
 - A compiling LangGraph skeleton with correct node/edge/interrupt wiring.
 - Shared TypeScript types (`AgentPersona`, `Scene`, `SceneTile`, lesson state).
+- A real `callAgentLLM()` backed by `@langchain/anthropic`'s `ChatAnthropic`.
+  Every node that talks to an agent sends that persona's `systemPrompt` plus
+  the running `messages` transcript and appends the reply back onto it, so
+  agents have memory of the lesson so far. Copy `.env.example` to `.env.local`
+  and set `ANTHROPIC_API_KEY` to actually run it.
 
 ## What's not here yet (later phases)
 
-- **No LLM is actually called.** `callAgentLLM()` in `lesson_graph.ts` is a
-  stub that throws on purpose — it's the one seam where you plug in
-  OpenAI/Anthropic/whatever provider you choose. Everything upstream of that
-  (prompts, state shape, graph wiring) is real.
 - **No `<VisualImmersionGrid />` UI** (Phase 2) — `Scene`/`SceneTile` types
   exist so the graph and a future frontend agree on shape, but there's no
   React component yet.

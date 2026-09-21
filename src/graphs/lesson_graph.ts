@@ -1,4 +1,6 @@
 import { StateGraph, Annotation, END, START, interrupt } from "@langchain/langgraph";
+import { ChatAnthropic } from "@langchain/anthropic";
+import { AIMessage, BaseMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { maestraElena, peerMateo, peerSofia, phoneticsCoach, taBilingual } from "../agents";
 import type { AgentPersona } from "../types/agent";
 
@@ -43,19 +45,47 @@ export const LessonState = Annotation.Root({
   taRequested: Annotation<boolean>({ default: () => false, reducer: (_prev, next) => next }),
   taQuestion: Annotation<string>({ default: () => "", reducer: (_prev, next) => next }),
   streak: Annotation<number>({ default: () => 0, reducer: (_prev, next) => next }),
+  // Every LLM turn (from any agent) gets appended here. The reducer
+  // concatenates instead of overwriting, so this is the graph's transcript —
+  // the same idea as an append-only `messages` table keyed by conversation id.
+  messages: Annotation<BaseMessage[]>({
+    default: () => [],
+    reducer: (prev, next) => prev.concat(next),
+  }),
 });
 
 export type LessonStateType = typeof LessonState.State;
 
 /**
- * Placeholder for the actual LLM call. Wire this to your model provider
- * (OpenAI, Anthropic, etc.) — it's intentionally isolated here so every node
- * below stays provider-agnostic. Swap the body without touching graph wiring.
+ * One ChatAnthropic client per agent, created lazily on first use and reused
+ * after that (an LLM client is just an HTTP client under the hood — no
+ * reason to reconnect on every turn). Reads ANTHROPIC_API_KEY from the
+ * environment; see .env.example.
  */
-async function callAgentLLM(agent: AgentPersona, userMessage: string): Promise<string> {
-  throw new Error(
-    `callAgentLLM is a stub. Wire "${agent.id}" up to your LLM provider using agent.systemPrompt as the system message and "${userMessage}" as the latest turn.`
-  );
+const modelCache = new Map<string, ChatAnthropic>();
+
+function getModelFor(agent: AgentPersona): ChatAnthropic {
+  const cached = modelCache.get(agent.id);
+  if (cached) return cached;
+
+  const model = new ChatAnthropic({
+    model: "claude-sonnet-5",
+    temperature: agent.role === "phonetics_coach" ? 0.2 : 0.7,
+  });
+  modelCache.set(agent.id, model);
+  return model;
+}
+
+/**
+ * The actual LLM call. Sends the persona's system prompt plus the running
+ * transcript plus the newest human turn, and returns the model's reply as
+ * plain text. `history` lets an agent "remember" earlier turns in the same
+ * lesson instead of responding to each message in isolation.
+ */
+async function callAgentLLM(agent: AgentPersona, userMessage: string, history: BaseMessage[] = []): Promise<string> {
+  const model = getModelFor(agent);
+  const response = await model.invoke([new SystemMessage(agent.systemPrompt), ...history, new HumanMessage(userMessage)]);
+  return typeof response.content === "string" ? response.content : JSON.stringify(response.content);
 }
 
 // --- Node 1: PlanUnit ------------------------------------------------------
@@ -79,8 +109,9 @@ async function planUnit(state: LessonStateType): Promise<Partial<LessonStateType
 // Elena introduces the visual stimulus and speaks the target phrase.
 async function teacherDrill(state: LessonStateType): Promise<Partial<LessonStateType>> {
   if (!state.currentScene) throw new Error("teacherDrill ran before planUnit produced a scene.");
-  await callAgentLLM(maestraElena, `Presenta esta escena: ${JSON.stringify(state.currentScene)}`);
-  return {};
+  const prompt = `Presenta esta escena a la clase, en español, siguiendo tus reglas: ${JSON.stringify(state.currentScene)}`;
+  const reply = await callAgentLLM(maestraElena, prompt, state.messages);
+  return { messages: [new HumanMessage(prompt), new AIMessage(reply)] };
 }
 
 // --- Node 3: PeerSimulation --------------------------------------------------
@@ -88,14 +119,27 @@ async function teacherDrill(state: LessonStateType): Promise<Partial<LessonState
 async function peerSimulation(state: LessonStateType): Promise<Partial<LessonStateType>> {
   const useMateo = Math.random() < 0.5;
   const agent = useMateo ? peerMateo : peerSofia;
+  // Whether/which error Mateo makes is decided here in code, not by the
+  // model, so the 30% injection rate from his persona is an exact
+  // probability rather than something the LLM might drift away from.
   const shouldError = useMateo && Math.random() < (peerMateo.errorInjectionRate ?? 0);
   const errorPattern = shouldError && peerMateo.errorBank ? peerMateo.errorBank[Math.floor(Math.random() * peerMateo.errorBank.length)] : undefined;
 
-  const text = errorPattern ? errorPattern.example : state.currentScene?.targetPhrase ?? "";
+  let text: string;
+  if (errorPattern) {
+    // Use the scripted example verbatim — it's a specific, tested error, not
+    // something worth leaving to chance.
+    text = errorPattern.example;
+  } else {
+    const prompt = `Reacciona brevemente a esta escena, en tu propio estilo: ${JSON.stringify(state.currentScene)}`;
+    text = await callAgentLLM(agent, prompt, state.messages);
+  }
+
   return {
     peerTurnAgentId: agent.id,
     peerTurnText: text,
     peerTurnHadError: Boolean(errorPattern),
+    messages: [new AIMessage(text)],
   };
 }
 
@@ -114,18 +158,19 @@ async function evaluateResponse(state: LessonStateType): Promise<Partial<LessonS
   const correct = state.userResponse.trim().toLowerCase() === target.trim().toLowerCase();
 
   const feedbackAgent = correct ? maestraElena : peerSofia;
-  await callAgentLLM(
-    feedbackAgent,
-    correct
-      ? `El estudiante respondió correctamente: "${state.userResponse}". Celébralo.`
-      : `El estudiante respondió "${state.userResponse}" pero el objetivo era "${target}". Da una corrección cálida con recasting.`
-  );
+  const feedbackPrompt = correct
+    ? `El estudiante respondió correctamente: "${state.userResponse}". Celébralo.`
+    : `El estudiante respondió "${state.userResponse}" pero el objetivo era "${target}". Da una corrección cálida con recasting.`;
+  const feedbackReply = await callAgentLLM(feedbackAgent, feedbackPrompt, state.messages);
 
-  await callAgentLLM(phoneticsCoach, `Evalúa la pronunciación de: "${state.userResponse}"`);
+  // The phonetics coach doesn't need conversation history — it only ever
+  // looks at the single utterance it's asked to score.
+  const phoneticNotesReply = await callAgentLLM(phoneticsCoach, `Evalúa la pronunciación de: "${state.userResponse}"`);
 
   return {
-    evaluation: { correct, transcript: state.userResponse },
+    evaluation: { correct, transcript: state.userResponse, phoneticNotes: [phoneticNotesReply] },
     streak: correct ? state.streak + 1 : 0,
+    messages: [new HumanMessage(state.userResponse), new AIMessage(feedbackReply)],
   };
 }
 
@@ -133,8 +178,16 @@ async function evaluateResponse(state: LessonStateType): Promise<Partial<LessonS
 // Only entered when the frontend sets `taRequested` before resuming the graph
 // (the "Ask TA" hotkey). Answers in English, then hands back to Spanish.
 async function taIntervention(state: LessonStateType): Promise<Partial<LessonStateType>> {
-  await callAgentLLM(taBilingual, state.taQuestion || "The learner pressed Help with no specific question.");
-  return { taRequested: false, taQuestion: "" };
+  // Deliberately NOT passed the Spanish-classroom `messages` history — the
+  // TA only needs the learner's question, not the in-character transcript,
+  // and mixing the two risks the TA picking up Spanish-only habits from it.
+  const question = state.taQuestion || "The learner pressed Help with no specific question.";
+  const reply = await callAgentLLM(taBilingual, question);
+  return {
+    taRequested: false,
+    taQuestion: "",
+    messages: [new HumanMessage(`[TA aside] ${question}`), new AIMessage(`[TA aside] ${reply}`)],
+  };
 }
 
 function routeAfterUserPrompt(state: LessonStateType): "taIntervention" | "evaluateResponse" {

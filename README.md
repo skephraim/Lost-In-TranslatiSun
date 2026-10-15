@@ -97,11 +97,42 @@ change, not a code change:
 `LLM_PROVIDER=anthropic` switches the whole classroom to Claude instead.
 Both paths are live; nothing else in the codebase changes.
 
-## What's not here yet (later phases)
+## Phase 2: the visual immersion grid
 
-- **No `<VisualImmersionGrid />` UI** (Phase 2) — `Scene`/`SceneTile` types
-  exist so the graph and a future frontend agree on shape, but there's no
-  React component yet.
+`<VisualImmersionGrid />` (`src/components/VisualImmersionGrid.tsx`) is the
+Rosetta-style 2x2 matcher, served by a Next.js 16 App Router page. Run it
+with `npm run dev` and open http://localhost:3000.
+
+All three interaction modes are implemented:
+
+| Mode | What the learner does | Captions |
+|---|---|---|
+| `contrastive_deduction` | Picks the tile matching the phrase | Shown — the contrast *is* the lesson |
+| `listen_select` | Hears the phrase, picks the tile | **Hidden until answered** — otherwise it's a reading test, not a listening one |
+| `speak_match` | Target tile is ringed; learner says the phrase | Shown |
+
+`scene.expectedResponseType` is load-bearing, not decorative: when it's
+`"speech"`, tile clicks *and* the 1-4 keyboard shortcuts are disabled, so a
+learner can't satisfy a speaking drill by clicking the tile already
+highlighted for them.
+
+Audio uses the browser's own `speechSynthesis`, preferring an `es-MX` voice
+and speaking at 0.9x — matching Maestra Elena's configured cadence.
+
+### Tiles are drawn, not photographed
+
+`src/components/SceneArt.tsx` renders each tile as inline SVG from a shared
+vocabulary (subject + action + object) rather than loading images. That's a
+pedagogical choice as much as a practical one: two tiles whose Spanish
+differs by one word also differ by exactly one visual mark, so the learner
+maps word to meaning by comparison. It also means no asset pipeline, no
+network, and no image licensing. `SceneTile.imageUrl` remains as an escape
+hatch for real photography later.
+
+The art is deliberately plain line-work — functional placeholder quality,
+not a finished visual identity.
+
+## What's not here yet (later phases)
 - **No ASR/TTS/phoneme-scoring pipeline** (Phase 3) — the phonetics coach's
   `PHONETIC_TARGETS` are defined, but nothing analyzes real audio yet.
 - **No Next.js app, API routes, or SSE streaming** (Phase 5) — this repo is
@@ -112,6 +143,7 @@ Both paths are live; nothing else in the codebase changes.
 ```bash
 npm install
 npm run typecheck   # no API key needed
+npm run dev         # the Phase 2 UI at http://localhost:3000
 npm run demo        # full lesson with a fake LLM, no API key needed
 ```
 

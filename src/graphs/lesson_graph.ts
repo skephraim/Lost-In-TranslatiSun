@@ -3,31 +3,11 @@ import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages";
 import { maestraElena, peerMateo, peerSofia, phoneticsCoach, taBilingual } from "../agents";
 import { resolveLLMBackend, type LLMCaller } from "../llm/backends";
 
+import { DEFAULT_RESPONSE_TYPE, type EvaluationResult, type Scene } from "../types/scene";
+import { SCENE_BANK } from "../data/scene_bank";
+
 export type { LLMCaller };
-
-/**
- * Visual tile the frontend's <VisualImmersionGrid /> renders. One drill = one
- * `scene` made of these tiles (see Phase 2 of the RosettaMAIC plan).
- */
-export interface SceneTile {
-  id: string;
-  imageUrl: string;
-  audioText: string;
-  isCorrect: boolean;
-}
-
-export interface Scene {
-  id: string;
-  mode: "listen_select" | "speak_match" | "contrastive_deduction";
-  tiles: SceneTile[];
-  targetPhrase: string;
-}
-
-export interface EvaluationResult {
-  correct: boolean;
-  transcript?: string;
-  phoneticNotes?: string[];
-}
+export type { Scene, SceneTile, EvaluationResult } from "../types/scene";
 
 /**
  * LangGraph state, threaded through every node. Annotation.Root defines how
@@ -58,50 +38,16 @@ export const LessonState = Annotation.Root({
 
 export type LessonStateType = typeof LessonState.State;
 
-/**
- * Drill bank PlanUnit cycles through. A fuller implementation would generate
- * these from the CEFR topic via the LLM rather than reading a fixed list.
- */
-const SCENE_BANK: Omit<Scene, "id">[] = [
-  {
-    mode: "contrastive_deduction",
-    targetPhrase: "El niño bebe agua.",
-    tiles: [
-      { id: "t1", imageUrl: "/scenes/boy-drinking-water.png", audioText: "El niño bebe agua.", isCorrect: true },
-      { id: "t2", imageUrl: "/scenes/woman-drinking-wine.png", audioText: "La mujer bebe vino.", isCorrect: false },
-      { id: "t3", imageUrl: "/scenes/man-eating-bread.png", audioText: "El hombre come pan.", isCorrect: false },
-      { id: "t4", imageUrl: "/scenes/girl-drinking-milk.png", audioText: "La niña bebe leche.", isCorrect: false },
-    ],
-  },
-  {
-    mode: "contrastive_deduction",
-    targetPhrase: "Los hombres corren.",
-    tiles: [
-      { id: "t1", imageUrl: "/scenes/men-running.png", audioText: "Los hombres corren.", isCorrect: true },
-      { id: "t2", imageUrl: "/scenes/man-running.png", audioText: "El hombre corre.", isCorrect: false },
-      { id: "t3", imageUrl: "/scenes/women-running.png", audioText: "Las mujeres corren.", isCorrect: false },
-      { id: "t4", imageUrl: "/scenes/man-walking.png", audioText: "El hombre camina.", isCorrect: false },
-    ],
-  },
-  {
-    mode: "listen_select",
-    targetPhrase: "La niña come una manzana.",
-    tiles: [
-      { id: "t1", imageUrl: "/scenes/girl-eating-apple.png", audioText: "La niña come una manzana.", isCorrect: true },
-      { id: "t2", imageUrl: "/scenes/boy-eating-apple.png", audioText: "El niño come una manzana.", isCorrect: false },
-      { id: "t3", imageUrl: "/scenes/girl-holding-apple.png", audioText: "La niña tiene una manzana.", isCorrect: false },
-      { id: "t4", imageUrl: "/scenes/girl-eating-orange.png", audioText: "La niña come una naranja.", isCorrect: false },
-    ],
-  },
-];
-
 // --- Node 1: PlanUnit ------------------------------------------------------
 // Deconstructs the CEFR topic into the scene (visual drill) for this tick.
 async function planUnit(state: LessonStateType): Promise<Partial<LessonStateType>> {
   const template = SCENE_BANK[state.drillsCompleted % SCENE_BANK.length];
-  return {
-    currentScene: { ...template, id: `${state.topic || "intro"}-${state.drillsCompleted}` },
+  const scene: Scene = {
+    ...template,
+    id: `${state.topic || "intro"}-${state.drillsCompleted}`,
+    expectedResponseType: DEFAULT_RESPONSE_TYPE[template.mode],
   };
+  return { currentScene: scene };
 }
 
 // --- Node 2: TeacherDrill ---------------------------------------------------

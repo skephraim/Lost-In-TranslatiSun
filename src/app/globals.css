@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+:root {
+  --surface: #faf7f2;
+  --surface-raised: #ffffff;
+  --border: #e4ddd1;
+  --text: #22201d;
+  --text-muted: #6d6659;
+  --accent: #b4552d;
+  --accent-soft: #f6e6dd;
+  --correct: #1d6b5a;
+  --correct-soft: #dcefe9;
+  --incorrect: #a8352f;
+  --incorrect-soft: #f7e0de;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface: #1a1816;
+    --surface-raised: #242120;
+    --border: #3a3532;
+    --text: #f2ede6;
+    --text-muted: #a39a8e;
+    --accent: #e08555;
+    --accent-soft: #3a2619;
+    --correct: #5cc0a6;
+    --correct-soft: #1b3630;
+    --incorrect: #e8847c;
+    --incorrect-soft: #3a211f;
+  }
+}
+
+:root[data-theme="dark"] {
+  --surface: #1a1816;
+  --surface-raised: #242120;
+  --border: #3a3532;
+  --text: #f2ede6;
+  --text-muted: #a39a8e;
+  --accent: #e08555;
+  --accent-soft: #3a2619;
+  --correct: #5cc0a6;
+  --correct-soft: #1b3630;
+  --incorrect: #e8847c;
+  --incorrect-soft: #3a211f;
+}
+
+@theme inline {
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-border-soft: var(--border);
+  --color-text-main: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-correct: var(--correct);
+  --color-correct-soft: var(--correct-soft);
+  --color-incorrect: var(--incorrect);
+  --color-incorrect-soft: var(--incorrect-soft);
+}
+
+body {
+  background: var(--surface);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

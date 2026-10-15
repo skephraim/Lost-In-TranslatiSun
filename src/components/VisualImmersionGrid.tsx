@@ -1,8 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Mic, Volume2, X } from "lucide-react";
+import { Check, Volume2, X } from "lucide-react";
 import { SceneArt } from "./SceneArt";
+import { HoldToTalkButton } from "./audio/HoldToTalkButton";
+import { PronunciationFeedback } from "./audio/PronunciationFeedback";
+import type { TruAccentReport } from "../services/truaccent/types";
 import type { Scene, SceneTile } from "../types/scene";
 
 /** Speaks Spanish text with the browser's own TTS, preferring an es-MX voice. */
@@ -26,23 +29,33 @@ export interface VisualImmersionGridProps {
   scene: Scene;
   /** Called with the chosen tile once the learner commits to an answer. */
   onAnswer?: (tile: SceneTile) => void;
-  /** Hold-to-talk handler. Phase 3 wires this to the ASR pipeline. */
-  onSpeechRequest?: () => void;
+  /** Called with the pronunciation report after a spoken attempt. */
+  onSpoken?: (report: TruAccentReport) => void;
 }
 
 type TileStatus = "idle" | "correct" | "incorrect";
 
-export function VisualImmersionGrid({ scene, onAnswer, onSpeechRequest }: VisualImmersionGridProps) {
+export function VisualImmersionGrid({ scene, onAnswer, onSpoken }: VisualImmersionGridProps) {
   const [chosenId, setChosenId] = useState<string | null>(null);
   const [replayingId, setReplayingId] = useState<string | null>(null);
+  const [report, setReport] = useState<TruAccentReport | null>(null);
   const answeredRef = useRef(false);
 
   // A new scene is a fresh question — clear whatever the last one answered.
   useEffect(() => {
     setChosenId(null);
     setReplayingId(null);
+    setReport(null);
     answeredRef.current = false;
   }, [scene.id]);
+
+  const handleReport = useCallback(
+    (next: TruAccentReport) => {
+      setReport(next);
+      onSpoken?.(next);
+    },
+    [onSpoken]
+  );
 
   // When the graph expects speech, clicking a tile must not count as the
   // answer — the target is already highlighted, so a click would just be
@@ -112,14 +125,7 @@ export function VisualImmersionGrid({ scene, onAnswer, onSpeechRequest }: Visual
         ) : null}
 
         {scene.mode === "speak_match" ? (
-          <button
-            type="button"
-            onClick={onSpeechRequest}
-            className="inline-flex items-center gap-2 rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white transition hover:opacity-90"
-          >
-            <Mic size={16} aria-hidden="true" />
-            Mantén para hablar
-          </button>
+          <HoldToTalkButton expectedPhrase={scene.targetPhrase} onReport={handleReport} />
         ) : null}
       </header>
 
@@ -193,9 +199,15 @@ export function VisualImmersionGrid({ scene, onAnswer, onSpeechRequest }: Visual
       </div>
 
       <p role="status" aria-live="polite" className="mt-4 min-h-[1.5rem] text-sm font-medium">
-        {chosenId === null ? (
+        {report ? (
+          report.wordsMatched ? (
+            <span className="text-correct">¡Exacto! Dijiste la frase correcta.</span>
+          ) : (
+            <span className="text-incorrect">Las palabras no coincidieron del todo. Mira los detalles abajo.</span>
+          )
+        ) : chosenId === null ? (
           <span className="text-text-muted">
-            {selectable ? "Elige una opción, o pulsa 1-4." : "Pulsa el micrófono y di la frase en voz alta."}
+            {selectable ? "Elige una opción, o pulsa 1-4." : "Mantén el micrófono y di la frase en voz alta."}
           </span>
         ) : scene.tiles.find((t) => t.id === chosenId)?.isCorrect ? (
           <span className="text-correct">¡Exacto! {scene.targetPhrase}</span>
@@ -203,6 +215,8 @@ export function VisualImmersionGrid({ scene, onAnswer, onSpeechRequest }: Visual
           <span className="text-incorrect">Casi. La respuesta es: {scene.targetPhrase}</span>
         )}
       </p>
+
+      {report ? <PronunciationFeedback report={report} /> : null}
     </section>
   );
 }

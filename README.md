@@ -132,18 +132,85 @@ hatch for real photography later.
 The art is deliberately plain line-work — functional placeholder quality,
 not a finished visual identity.
 
+## Phase 3: speech capture and TruAccent
+
+Hold the mic button in a `speak_match` drill: the app records, transcribes,
+scores the pronunciation, and shows a waveform with the measurements.
+
+- `src/components/audio/` — `useAudioRecorder` (MediaRecorder + a live level
+  meter from a Web Audio analyser), the hold-to-talk button, the waveform,
+  and the feedback panel.
+- `src/services/asr/` — a `SpeechRecognizer` interface with two engines.
+  The interface follows the *recording lifecycle* (`begin` / `finish` /
+  `cancel`) rather than `transcribe(blob)`, because the Web Speech API
+  listens to the mic itself and never sees a blob — modelling it as a
+  file-taking function would misrepresent how it works.
+- `src/services/truaccent/` — the scorer, with tests.
+
+Recording and recognition run **in parallel** on one press. A live engine
+never hands back the audio, so capturing alongside it is the only way to get
+both a transcript and a waveform from a single utterance.
+
+### What the scorer can and cannot actually tell you
+
+This is the part most worth understanding before trusting it.
+
+Everything comes from the transcript plus measurable audio properties. There
+is no formant analysis, so the scorer **cannot hear vowel quality directly**.
+What it can do is notice when the recognizer heard a *different word* and
+reason about which articulation would explain the substitution — "corren"
+coming back as "coren" is real evidence the trill became a tap.
+
+That drives a three-valued result, and the middle one matters:
+
+| Status | Means |
+|---|---|
+| `missed` | Positive evidence of a problem — a substitution consistent with this target |
+| `ok` | Positive evidence the sound was produced |
+| `not_assessable` | Target absent from the phrase, **or undetectable without acoustics** |
+
+**A matching transcript is not evidence of good pronunciation.** Recognizers
+snap to the nearest plausible word and will happily transcribe a heavily
+accented "perro" as "perro". Reporting "✓ your vowels were perfect" on that
+basis would be fabricated praise, and worse than silence for a learner who
+would then stop working on it. So the scorer says `not_assessable` wherever
+it genuinely cannot tell, and the UI labels those "sin evaluar" rather than
+dressing them up as passes. A test asserts this specifically.
+
+Because of that, **drill phrases should contain the sounds being coached** —
+otherwise every finding is honestly but uselessly "not assessable". The
+trill drill uses "Los hombres corren" for exactly this reason.
+
+### On the "native model" waveform comparison
+
+The original plan called for comparing the learner's waveform against a
+native model's. Browser speech synthesis offers **no way to capture its
+output as audio data** — there is no `MediaStream` from `speechSynthesis` —
+so there is no native curve to overlay. Rather than draw a plausible-looking
+fake, the waveform shows the learner's real envelope against the phrase's
+expected *syllable count*, which is genuine and actionable: seven syllables
+should yield roughly seven energy bursts, so running words together shows
+up. A true overlay needs recorded native-speaker clips per phrase.
+
 ## What's not here yet (later phases)
-- **No ASR/TTS/phoneme-scoring pipeline** (Phase 3) — the phonetics coach's
-  `PHONETIC_TARGETS` are defined, but nothing analyzes real audio yet.
-- **No Next.js app, API routes, or SSE streaming** (Phase 5) — this repo is
-  currently just the agent/graph "brain," no server or UI around it.
+
+- **The UI and the lesson graph are still separate** (Phase 5). The grid
+  reads scenes from the static bank; nothing streams them from LangGraph
+  over SSE yet, and a spoken attempt scores locally without feeding its
+  result back to Elena for a reaction.
+- **No multi-voice TTS** — all three classroom personas share the browser's
+  one Spanish voice. Distinct ElevenLabs/OpenAI voices per persona, and the
+  per-persona cadence already in their configs, are not wired up.
+- **No classroom avatars or top-bar progress** (Phase 5's UI layer).
+- **No real acoustic analysis** — see the scorer's limits above.
 
 ## Running it
 
 ```bash
 npm install
 npm run typecheck   # no API key needed
-npm run dev         # the Phase 2 UI at http://localhost:3000
+npm run test        # scorer tests, no API key needed
+npm run dev         # the UI at http://localhost:3000
 npm run demo        # full lesson with a fake LLM, no API key needed
 ```
 

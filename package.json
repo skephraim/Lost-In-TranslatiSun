@@ -9,7 +9,8 @@
     "demo": "tsx src/demo/run_lesson.ts",
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "node --test --import tsx src/**/*.test.ts"
   },
   "dependencies": {
     "@langchain/anthropic": "^1.5.10",

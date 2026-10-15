@@ -43,7 +43,7 @@ export default function Page() {
       <VisualImmersionGrid
         scene={scene}
         onAnswer={handleAnswer}
-        onSpeechRequest={() => window.alert("El micrófono llega en la Fase 3.")}
+        onSpoken={(report) => setScore((s) => ({ right: s.right + (report.wordsMatched ? 1 : 0), total: s.total + 1 }))}
       />
 
       <nav className="mt-8 flex w-full max-w-3xl items-center justify-between gap-3">

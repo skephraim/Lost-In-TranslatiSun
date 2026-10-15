@@ -46,6 +46,20 @@ export const SCENE_BANK: SceneTemplate[] = [
     ],
   },
   {
+    // Speak-to-match on a phrase whose target sound the scorer can actually
+    // assess: "corren" carries the trilled rr. A pronunciation drill should
+    // contain the phoneme it means to coach, otherwise every finding comes
+    // back "not assessable" and the learner gets nothing actionable.
+    mode: "speak_match",
+    targetPhrase: "Los hombres corren.",
+    tiles: [
+      { id: "t1", art: { subject: "hombres", action: "correr" }, audioText: "Los hombres corren.", isCorrect: true },
+      { id: "t2", art: { subject: "hombre", action: "correr" }, audioText: "El hombre corre.", isCorrect: false },
+      { id: "t3", art: { subject: "mujeres", action: "correr" }, audioText: "Las mujeres corren.", isCorrect: false },
+      { id: "t4", art: { subject: "hombre", action: "caminar" }, audioText: "El hombre camina.", isCorrect: false },
+    ],
+  },
+  {
     // Speak-to-match: the learner produces the phrase rather than picking it.
     mode: "speak_match",
     targetPhrase: "La mujer bebe agua.",
